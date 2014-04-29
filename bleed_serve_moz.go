@@ -9,7 +9,6 @@ import (
 	"log"
 	"net/http"
 	"net/url"
-	"time"
 
 	mzutil "github.com/mozilla-services/Heartbleed/mzutil"
 
@@ -18,21 +17,20 @@ import (
 	cache "github.com/mozilla-services/Heartbleed/cache"
 )
 
-var PAYLOAD = []byte("heartbleed.mozilla.com")
-var REDIRHOST = "http://localhost"
-var PORT_SRV = ":8082"
-var CACHE_TAB = "mozHeartbleed"
-var EXPRY time.Duration
-var VERSION = "0.1"
-
-/* Command line args for the app.
- */
-var opts struct {
-	ConfigFile string `short:"c" long:"config" optional:"true" description:"General Config file"`
-	Profile    string `long:"profile" optional:"true"`
-	MemProfile string `long:"memprofile" optional:"true"`
-	LogLevel   int    `short:"l" long:"loglevel" optional:"true"`
-}
+var (
+	PAYLOAD   = []byte("heartbleed.mozilla.com")
+	REDIRHOST = "http://localhost"
+	PORT_SRV  = ":8082"
+	/* Command line args for the app.
+	 */
+	opts struct {
+		ConfigFile string `short:"c" long:"config" optional:"true" description:"General Config file"`
+		Profile    string `long:"profile" optional:"true"`
+		MemProfile string `long:"memprofile" optional:"true"`
+		LogLevel   int    `short:"l" long:"loglevel" optional:"true"`
+	}
+	metrics *mzutil.Metrics
+)
 
 func defaultHandler(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, REDIRHOST, http.StatusFound)
@@ -49,12 +47,6 @@ type result struct {
 	Host  string `json:"host"`
 }
 
-type cacheReply struct {
-	Host       string
-	LastUpdate int64
-	Status     int64
-}
-
 func handleRequest(tgt *bleed.Target, w http.ResponseWriter, r *http.Request, skip bool) {
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 
@@ -62,6 +54,7 @@ func handleRequest(tgt *bleed.Target, w http.ResponseWriter, r *http.Request, sk
 	var rc int
 	var err error
 	var errS string
+	var metricName = []string{"vulnerable", "safe", "error"}
 	data := ""
 	if cReply, ok := cache.Check(tgt.HostIp); !ok {
 
@@ -94,6 +87,9 @@ func handleRequest(tgt *bleed.Target, w http.ResponseWriter, r *http.Request, sk
 			// 	}
 			// }
 		}
+		metrics.Increment("total")
+		metrics.Increment(metricName[rc])
+
 		cerr := cache.Set(tgt.HostIp, rc)
 		if cerr != nil {
 			log.Printf("Cache Error!: %s", err.Error())
@@ -117,8 +113,9 @@ func handleRequest(tgt *bleed.Target, w http.ResponseWriter, r *http.Request, sk
 			}
 		}
 	} else {
-        rc = int(cReply.Status)
-    }
+		metrics.Increment("cached")
+		rc = int(cReply.Status)
+	}
 
 	// clear the data, because we don't want to expose that.
 	data = ""
@@ -130,6 +127,22 @@ func handleRequest(tgt *bleed.Target, w http.ResponseWriter, r *http.Request, sk
 	} else {
 		w.Write(j)
 	}
+}
+
+func metricsHandler(w http.ResponseWriter, r *http.Request) {
+	snapshot := metrics.Snapshot()
+	w.Header().Set("Content-Type", "application/json")
+	reply, err := json.Marshal(snapshot)
+	if err != nil {
+		log.Printf("ERROR: Could not generate metrics report: " + err.Error())
+		w.Write([]byte("{}"))
+		return
+	} else {
+		if reply == nil {
+			reply = []byte("{}")
+		}
+	}
+	w.Write(reply)
 }
 
 func statusHandler(w http.ResponseWriter, r *http.Request) {
@@ -193,13 +206,15 @@ func main() {
 	REDIRHOST = config.Get("redir.host", "localhost")
 	PORT_SRV = config.Get("listen.port", ":8082")
 	cache.Init(config.Get("godynamo.conf.file", "./conf/aws-config.json"),
-        config.Get("expry", "10m"))
+		config.Get("expry", "10m"))
+	metrics = mzutil.NewMetrics("heartbleed", config)
 
 	// should take a conf arg
 
 	http.HandleFunc("/", defaultHandler)
 	// Required for some ELBs
 	http.HandleFunc("/status", statusHandler)
+	http.HandleFunc("/metrics", metricsHandler)
 	http.HandleFunc("/bleed/", bleedHandler)
 	http.HandleFunc("/bleed/query", bleedQueryHandler)
 	log.Printf("Starting server on %s\n", PORT_SRV)

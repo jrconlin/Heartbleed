@@ -60,20 +60,32 @@ func ReadMzConfig(filename string) (config *MzConfig, err error) {
 /* Get a value from the config map, providing an optional default.
    This is a fairly common behavior for me.
 */
-func (self *MzConfig) Get(key string, def string) string {
+func (self *MzConfig) Get(key, def string) string {
 	if val, ok := self.config[key]; ok {
 		return val.(string)
 	}
 	return def
 }
 
+func (self *MzConfig) Contains(key string) bool {
+	_, ok := self.config[key]
+	return ok
+}
+
 /* Set a value if it's not already defined
  */
-func (self *MzConfig) SetDefault(key string, val string) string {
+func (self *MzConfig) SetDefault(key, val string) string {
 	if _, ok := self.config[key]; !ok {
 		self.config[key] = val
 	}
 	return self.config[key].(string)
+}
+
+/* Override the value
+ */
+func (self *MzConfig) Override(key, val string) string {
+	self.config[key] = val
+	return val
 }
 
 /* Test for a boolean flag. Missing flags are false.
